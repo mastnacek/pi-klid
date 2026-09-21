@@ -51,7 +51,15 @@ let klidEnabled = false;
 let overlayActive = false;
 let releaseOverlay: (() => void) | null = null; // closes the live overlay
 let workingTouched = false; // we customized the working row
-let lastTermHeight = 40;
+let lastCoverHeight = 24;
+
+/**
+ * Bottom band rows left untouched by the cover: working row + input editor +
+ * footer. Adaptive to terminal height so the editor never gets overpainted.
+ */
+function bottomBand(termHeight: number): number {
+  return Math.min(12, Math.max(6, Math.round(termHeight * 0.22)));
+}
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -92,9 +100,10 @@ function quietWorkingIndicator(theme: Theme): { frames: string[]; intervalMs: nu
 // ---------------------------------------------------------------------------
 
 /**
- * Static, opaque full-screen cover. Renders a single dim "Working..." line at
- * the vertical center. No animation, no color cycling, no timers — there is
- * nothing to stare at; it only signals that work is in progress.
+ * Static, opaque cover for the transcript region only. Renders a single dim
+ * "Working..." line at the vertical center. No animation, no color cycling,
+ * no timers — nothing to stare at, it only signals that work is in progress.
+ * The bottom band (working row + input editor + footer) is never painted over.
  */
 class QuietCover implements Component {
   private theme: Theme;
@@ -113,9 +122,9 @@ class QuietCover implements Component {
   render(width: number): string[] {
     const th = this.theme;
     const W = Math.max(20, width);
-    const H = Math.max(12, lastTermHeight);
+    const H = Math.max(8, lastCoverHeight);
 
-    // Character grid for the whole screen so the cover is opaque everywhere.
+    // Character grid for the whole cover region so it is opaque everywhere.
     const grid: string[][] = Array.from({ length: H }, () => Array<string>(W).fill(" "));
 
     const word = "Working...";
@@ -156,9 +165,10 @@ function openOverlay(ctx: ExtensionContext): void {
         anchor: "top-left",
         width: "100%",
         maxHeight: "100%",
-        // Capture the real terminal height as the cover renders each cycle.
+        // Capture the real terminal height each cycle and reserve the bottom
+        // band (working row + input + footer) so it stays visible and clean.
         visible: (_w, h) => {
-          lastTermHeight = h;
+          lastCoverHeight = Math.max(8, h - bottomBand(h));
           return true;
         },
       },

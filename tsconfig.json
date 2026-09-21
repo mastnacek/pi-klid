@@ -1,7 +1,12 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["index.ts"]
+  "include": [
+    "index.ts",
+    "kanban.ts"
+  ]
 }

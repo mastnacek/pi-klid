@@ -3,17 +3,18 @@
  *
  * `/klid on` hides thinking blocks at the render level and, while the agent is
  * running, covers every tool call / streaming update behind a quiet surface:
- * either the static "Working..." cover or a live SPAI task dashboard. When the
- * agent settles, the overlay dissolves and only the clean final answer is
- * revealed. Nothing disturbs you in between.
+ * either the static "Working..." cover, a live SPAI task list, or the SPAI
+ * kanban board. When the agent settles, the overlay dissolves and only the
+ * clean final answer is revealed. Nothing disturbs you in between.
  *
  * Usage:
  *   /klid            — help banner
  *   /klid on         — enable quiet mode
  *   /klid off        — disable quiet mode
  *   /klid toggle     — flip quiet mode
- *   /klid view spai  — show the SPAI task dashboard while working
- *   /klid view cover — show the static quiet cover while working
+ *   /klid view spai   — show the SPAI task list while working
+ *   /klid view kanban — show the SPAI kanban board while working
+ *   /klid view cover  — show the static quiet cover while working
  *   /klid status     — show current state
  *
  * The enabled state + view persist to ~/.pi/agent/pi-klid.json and are
@@ -45,8 +46,11 @@ import {
   type SpaiIndexEntry,
   type SpaiStatus,
 } from "./spai.js";
+import { KanbanBoard } from "./kanban.js";
 
-type KlidView = "cover" | "spai";
+type KlidView = "cover" | "spai" | "kanban";
+
+const KLID_VIEWS: KlidView[] = ["cover", "spai", "kanban"];
 
 interface KlidConfig {
   enabled: boolean;
@@ -60,7 +64,7 @@ const COMMAND_DOCS: Record<string, string> = {
   on: "enable quiet mode",
   off: "disable quiet mode",
   toggle: "flip quiet mode",
-  view: "select working view (cover | spai)",
+  view: "select working view (cover | spai | kanban)",
   status: "show current quiet state",
   help: "display this reference banner",
 };
@@ -94,7 +98,7 @@ function loadConfig(): KlidConfig {
       const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<KlidConfig>;
       return {
         enabled: raw.enabled === true,
-        view: raw.view === "spai" ? "spai" : "cover",
+        view: KLID_VIEWS.includes(raw.view as KlidView) ? (raw.view as KlidView) : "cover",
       };
     }
   } catch {
@@ -459,16 +463,24 @@ function openOverlay(ctx: ExtensionContext, kind: KlidView): void {
         }
       };
       releaseOverlay = close;
-      return kind === "spai"
-        ? new SpaiDashboard(tui, theme, ctx.cwd, close)
-        : new QuietCover(theme);
+      if (kind === "spai") return new SpaiDashboard(tui, theme, ctx.cwd, close);
+      if (kind === "kanban") {
+        return new KanbanBoard({
+          tui,
+          theme,
+          cwd: ctx.cwd,
+          close,
+          height: () => lastCoverHeight,
+        });
+      }
+      return new QuietCover(theme);
     },
     {
       overlay: true,
       overlayOptions: {
         anchor: "top-left",
         width: "100%",
-        // The cover is passive; the SPAI dashboard captures keys for navigation.
+        // The cover is passive; the SPAI views capture keys for navigation.
         nonCapturing: kind === "cover",
         // Capture the real terminal height each cycle and reserve the bottom
         // band (working row + input + footer) so it stays visible and clean.
@@ -527,14 +539,17 @@ function setEnabled(ctx: ExtensionContext, on: boolean): void {
   }
 }
 
+const VIEW_LABELS: Record<KlidView, string> = {
+  cover: "quiet cover",
+  spai: "SPAI dashboard",
+  kanban: "SPAI kanban board",
+};
+
 function setView(ctx: ExtensionContext, view: KlidView): void {
   klidView = view;
   saveConfig({ enabled: klidEnabled, view });
   if (ctx.hasUI) {
-    ctx.ui.notify(
-      `klid: working view → ${view === "spai" ? "SPAI dashboard" : "quiet cover"}`,
-      "info",
-    );
+    ctx.ui.notify(`klid: working view → ${VIEW_LABELS[view]}`, "info");
   }
 }
 
@@ -597,16 +612,16 @@ export default function (pi: ExtensionAPI): void {
         const cmd = (tokens[0] ?? "").toLowerCase();
         if (cmd === "view" || cmd === "dashboard") {
           const typed = (tokens[1] ?? "").toLowerCase();
-          const opts = ["spai", "cover"]
-            .filter((v) => v.startsWith(typed))
-            .map((v) => ({
-              value: `view ${v}`,
-              label: `view ${v}`,
-              description:
-                v === "spai"
-                  ? "show SPAI task dashboard while working (interactive)"
-                  : "static quiet cover while working (passive)",
-            }));
+          const opts = KLID_VIEWS.filter((v) => v.startsWith(typed)).map((v) => ({
+            value: `view ${v}`,
+            label: `view ${v}`,
+            description:
+              v === "cover"
+                ? "static quiet cover while working (passive)"
+                : v === "spai"
+                  ? "SPAI task list while working (interactive)"
+                  : "SPAI kanban board while working (interactive)",
+          }));
           return opts.length > 0 ? opts : null;
         }
         return null;
@@ -633,7 +648,7 @@ export default function (pi: ExtensionAPI): void {
         "  /klid on                — Enable quiet mode",
         "  /klid off               — Disable quiet mode",
         "  /klid toggle            — Flip quiet mode",
-        "  /klid view spai|cover   — Working view: live SPAI dashboard | static cover",
+        "  /klid view <view>       — cover | spai (task list) | kanban (board)",
         "  /klid status            — Show current quiet state",
         "  /klid help              — Display this reference banner",
         "",
@@ -665,10 +680,13 @@ export default function (pi: ExtensionAPI): void {
         case "view":
         case "dashboard": {
           const target = (tokens[1] ?? "").toLowerCase();
-          if (target === "spai" || target === "cover") {
-            setView(ctx, target);
+          if (KLID_VIEWS.includes(target as KlidView)) {
+            setView(ctx, target as KlidView);
           } else {
-            ctx.ui.notify(`klid: working view is \"${klidView}\". Use: /klid view spai|cover`, "info");
+            ctx.ui.notify(
+              `klid: working view is \"${klidView}\". Use: /klid view cover|spai|kanban`,
+              "info",
+            );
           }
           break;
         }

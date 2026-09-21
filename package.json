@@ -1,7 +1,7 @@
 {
   "name": "pi-klid",
   "version": "1.0.0",
-  "description": "Quiet zen mode for the pi coding agent. /klid hides thinking and tool activity behind a static \"Working...\" cover or a live SPAI task dashboard until the agent settles.",
+  "description": "Quiet zen mode for the pi coding agent. /klid hides thinking and tool activity behind a static \"Working...\" cover, a live SPAI task list, or the SPAI kanban board until the agent settles.",
   "type": "module",
   "license": "MIT",
   "author": "jara",
@@ -19,6 +19,7 @@
   "files": [
     "README.md",
     "index.ts",
+    "kanban.ts",
     "spai.ts",
     "package.json"
   ],

@@ -33,16 +33,19 @@ In non-TUI modes where overlays cannot render (`--mode rpc`, `--mode json`,
 
 ## Working views
 
-Two surfaces can hide the run while `/klid on`:
+Three surfaces can hide the run while `/klid on`:
 
 - **`cover`** (default) — a static, dim `Working...` line. Unanimated by design:
   nothing to stare at.
-- **`spai`** — a live, interactive SPAI backlog dashboard. Browsable while the
-  agent works in the background: read tasks/ideas/notes from the project's
+- **`spai`** — a live, interactive SPAI backlog list. Browsable while the agent
+  works in the background: read tasks/ideas/notes from the project's
   `docs/spai/` ledger, add new ones, cycle statuses, and open full details.
+- **`kanban`** — a five-column SPAI kanban board (todo / working / waiting /
+  done / cancelled) showing only `Todo` records. Move tasks between columns
+  while the agent works, so a slow run pays for itself.
 
-Switch with `/klid view spai` or `/klid view cover`. The chosen view persists
-and is restored on session start.
+Switch with `/klid view cover|spai|kanban`. The chosen view persists and is
+restored on session start.
 
 ### SPAI dashboard keys
 
@@ -55,9 +58,27 @@ and is restored on session start.
 | `r` | Reload index from disk |
 | `Esc` | Close dashboard |
 
-Everything written by the dashboard uses the exact SPAI file format pi-spai
-uses (`docs/spai/.index.json` + `YYYY-MM-DD-SPAI-NNN-*.md`), so items recorded
-here appear in `/spai` and vice versa.
+### SPAI kanban keys
+
+| Key | Action |
+| --- | --- |
+| `←`/`→` or `h`/`l` | Focus column |
+| `↑`/`↓` or `k`/`j` | Move inside the focused column |
+| `Space` / `Tab` | Push the selected task one column right |
+| `⌫` / `[` / `Shift+←` | Pull the selected task one column left |
+| `1`-`5` (`t` `w` `p` `d` `c` `z`) | Send the selected task to a status |
+| `x` | Toggle done ↔ todo |
+| `n` | New task (SPAI syntax) |
+| `Enter` | Open full item detail |
+| `r` | Reload index from disk |
+| `Esc` / `q` | Close the board |
+
+The board renders all five columns side by side on terminals ≥ 84 columns and
+falls back to a single focused column with status tabs on narrower ones.
+
+Everything written by the dashboard and the board uses the exact SPAI file
+format pi-spai uses (`docs/spai/.index.json` + `YYYY-MM-DD-SPAI-NNN-*.md`), so
+items recorded here appear in `/spai` and vice versa.
 
 ## Install
 
@@ -71,8 +92,9 @@ Add the plugin directory to your pi extensions (e.g. via your pi config's
 /klid on            — enable quiet mode
 /klid off           — disable quiet mode
 /klid toggle        — flip quiet mode
-/klid view spai     — live SPAI dashboard while working
 /klid view cover    — static quiet cover while working
+/klid view spai     — live SPAI task list while working
+/klid view kanban   — live SPAI kanban board while working
 /klid status        — show current state
 ```
 

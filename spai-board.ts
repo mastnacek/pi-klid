@@ -46,6 +46,7 @@ const STORAGE_SPECIFIER = "../pi-spai/src/storage.js";
 const VIEWER_SPECIFIER = "../pi-spai/src/viewer.js";
 
 let cached: SpaiBoardModule | null | undefined;
+let loadError: string | null = null;
 
 /** Loads pi-spai's board once; `null` means "not installed, use the local one". */
 export async function loadSpaiBoard(): Promise<SpaiBoardModule | null> {
@@ -64,16 +65,31 @@ export async function loadSpaiBoard(): Promise<SpaiBoardModule | null> {
     const formatReadingMode = viewer["formatReadingMode"] as SpaiBoardModule["formatReadingMode"] | undefined;
 
     if (!BoardComponent || !loadIndex || !saveRecord || !readRecord || !formatReadingMode) {
+      loadError = "pi-spai found but its board API is missing";
       cached = null;
       return cached;
     }
 
+    loadError = null;
     cached = { BoardComponent, loadIndex, saveRecord, readRecord, formatReadingMode };
-  } catch {
+  } catch (err) {
     // pi-spai absent, renamed, or moved — fall back to the local board.
+    loadError = err instanceof Error ? (err.message.split("\n")[0] ?? err.message) : String(err);
     cached = null;
   }
   return cached;
+}
+
+/**
+ * Which board the kanban view will use, and why. Surfaced by `/klid status` so
+ * a silent fallback to the bundled board becomes visible instead of invisible.
+ */
+export function spaiBoardSource(): { source: "pi-spai" | "local"; detail: string } {
+  if (cached) return { source: "pi-spai", detail: "pi-spai's own KanbanBoardComponent" };
+  if (cached === undefined) {
+    return { source: "local", detail: "not loaded yet — pi-spai's board is tried on the first kanban run" };
+  }
+  return { source: "local", detail: loadError ?? "pi-spai not installed next to pi-klid" };
 }
 
 /** Mirrors pi-spai's internal `formatRealizePrompt`. */

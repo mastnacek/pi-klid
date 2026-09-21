@@ -110,7 +110,7 @@ Add the plugin directory to your pi extensions (e.g. via your pi config's
 /klid view cover    — static quiet cover while working
 /klid view spai     — live SPAI task list while working
 /klid view kanban   — live SPAI kanban board while working
-/klid status        — show current state
+/klid status        — show current state (incl. which kanban board is used)
 ```
 
 The enabled state persists to `~/.pi/agent/pi-klid.json` and is restored on the

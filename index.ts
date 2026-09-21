@@ -53,6 +53,7 @@ import { KanbanBoard } from "./kanban.js";
 import {
   formatRealizePrompt,
   loadSpaiBoard,
+  spaiBoardSource,
   type SpaiBoardModule,
   type SpaiBoardRecord,
 } from "./spai-board.js";
@@ -975,8 +976,16 @@ export default function (pi: ExtensionAPI): void {
         case "status": {
           const state = klidEnabled ? "quiet mode ON" : "quiet mode OFF";
           const thinking = klidEnabled ? "hidden" : "visible";
+          // Resolve the board source so the status is truthful even before the
+          // first kanban run (a silent fallback is otherwise invisible).
+          await loadSpaiBoard();
+          const board = spaiBoardSource();
+          const boardText =
+            board.source === "pi-spai"
+              ? "kanban: pi-spai's board"
+              : `kanban: local fallback (${board.detail})`;
           ctx.ui.notify(
-            `klid: ${state} | thinking: ${thinking} | view: ${klidView} | persists: ~/.pi/agent/pi-klid.json`,
+            `klid: ${state} | thinking: ${thinking} | view: ${klidView} | ${boardText} | persists: ~/.pi/agent/pi-klid.json`,
             "info",
           );
           break;

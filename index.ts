@@ -467,7 +467,6 @@ function openOverlay(ctx: ExtensionContext, kind: KlidView): void {
       if (kind === "kanban") {
         return new KanbanBoard({
           tui,
-          theme,
           cwd: ctx.cwd,
           close,
           height: () => lastCoverHeight,

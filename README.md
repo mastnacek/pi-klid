@@ -73,8 +73,12 @@ restored on session start.
 | `r` | Reload index from disk |
 | `Esc` / `q` | Close the board |
 
-The board renders all five columns side by side on terminals ≥ 84 columns and
-falls back to a single focused column with status tabs on narrower ones.
+The board is the visual twin of pi-spai's `/spai board`: same Linkarzu truecolor
+palette (pink todo / gold working / violet waiting / mint done / slate
+cancelled), same frames, status ribbon, column badges and selection highlight —
+colors are byte-identical to `pi-spai/src/viewer.ts`. It renders the
+five-column grid down to 75 columns and falls back to a single focused column
+with status tabs below that, matching pi-spai's breakpoint.
 
 Everything written by the dashboard and the board uses the exact SPAI file
 format pi-spai uses (`docs/spai/.index.json` + `YYYY-MM-DD-SPAI-NNN-*.md`), so

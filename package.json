@@ -1,0 +1,38 @@
+{
+  "name": "pi-klid",
+  "version": "1.0.0",
+  "description": "Quiet zen mode for the pi coding agent. /klid hides thinking blocks and all tool/stream activity behind a slow breathing \"Working...\" animation until the agent settles.",
+  "type": "module",
+  "license": "MIT",
+  "author": "jara",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "klid",
+    "quiet",
+    "zen",
+    "focus",
+    "minimal",
+    "breathing",
+    "distraction-free"
+  ],
+  "files": [
+    "README.md",
+    "index.ts",
+    "package.json"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -22,10 +22,12 @@ vertical center of the transcript area. No pulsing, no color cycling, no dot
 progress — it signals that work is in progress without offering anything to
 stare at, so it does not hold your attention while you wait.
 
-The cover only paints the transcript region. The bottom band — working row,
-input editor, and footer — is sized adaptively (~22% of terminal height,
-clamped 6-12 rows) and is never overpainted, so the input window and footer
-remain visible and intact while the agent works.
+The cover only paints the transcript region. The bottom band is **measured**,
+not guessed: every render cycle the plugin sums the rendered height of pi's dock
+(queued messages, status, widgets, the input editor, the footer) and reserves
+exactly those rows, falling back to a ~22% band (clamped 6-12 rows) only when
+that layout is not recognized. A multi-line prompt, an extra widget or a taller
+footer therefore never pushes the editor under the cover.
 
 In non-TUI modes where overlays cannot render (`--mode rpc`, `--mode json`,
 `--mode print`) the plugin falls back to the built-in working row: a static
@@ -42,7 +44,13 @@ Three surfaces can hide the run while `/klid on`:
   `docs/spai/` ledger, add new ones, cycle statuses, and open full details.
 - **`kanban`** — a five-column SPAI kanban board (todo / working / waiting /
   done / cancelled) showing only `Todo` records. Move tasks between columns
-  while the agent works, so a slow run pays for itself.
+  while the agent works, so a slow run pays for itself. When `pi-spai` is
+  installed next to this plugin, the board **is** pi-spai's own
+  `KanbanBoardComponent` — one implementation, no drift — including its `n`
+  capture flow (`ctx.ui.input` with the `. ` prefill, so `. `/`/ `/`/. `/`x `/`z `
+  `/`? `/`- ` are recognized from the first character, tags and `!`/`@` metadata
+  parsed), its `Enter` reading mode and its `r` realize prompt. Without pi-spai
+  the bundled fallback board is used, with the same keys and palette.
 
 Switch with `/klid view cover|spai|kanban`. The chosen view persists and is
 restored on session start.
@@ -72,6 +80,9 @@ restored on session start.
 | `Enter` | Open full item detail |
 | `r` | Reload index from disk |
 | `Esc` / `q` | Close the board |
+
+With pi-spai installed, the kanban board also keeps its `r` = realize (loads the
+item into the prompt without sending it) and `Enter` = reading mode behaviours.
 
 The board is the visual twin of pi-spai's `/spai board`: same Linkarzu truecolor
 palette (pink todo / gold working / violet waiting / mint done / slate

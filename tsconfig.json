@@ -7,6 +7,8 @@
   },
   "include": [
     "index.ts",
-    "kanban.ts"
+    "kanban.ts",
+    "palette.ts",
+    "spai-board.ts"
   ]
 }

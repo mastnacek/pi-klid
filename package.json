@@ -20,6 +20,8 @@
     "README.md",
     "index.ts",
     "kanban.ts",
+    "palette.ts",
+    "spai-board.ts",
     "spai.ts",
     "package.json"
   ],

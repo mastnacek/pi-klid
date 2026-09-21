@@ -29,8 +29,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
   matchesKey,
+  truncateToWidth,
+  visibleWidth,
   type AutocompleteItem,
   type Component,
+  type OverlayHandle,
   type TUI,
 } from "@earendil-works/pi-tui";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -47,6 +50,13 @@ import {
   type SpaiStatus,
 } from "./spai.js";
 import { KanbanBoard } from "./kanban.js";
+import {
+  formatRealizePrompt,
+  loadSpaiBoard,
+  type SpaiBoardModule,
+  type SpaiBoardRecord,
+} from "./spai-board.js";
+import { pinkGlow } from "./palette.js";
 
 type KlidView = "cover" | "spai" | "kanban";
 
@@ -79,13 +89,48 @@ let overlayActive = false;
 let releaseOverlay: (() => void) | null = null; // closes the live overlay
 let workingTouched = false; // we customized the working row
 let lastCoverHeight = 24;
+let overlayTui: TUI | null = null; // live TUI, for dock measurement
+let overlayHandle: OverlayHandle | null = null;
 
 /**
- * Bottom band rows left untouched by the cover: working row + input editor +
- * footer. Adaptive to terminal height so the editor never gets overpainted.
+ * Fallback band: rows left untouched when the dock cannot be measured. Used
+ * only when pi's component shape is unrecognized (unknown host/fullscreen).
  */
 function bottomBand(termHeight: number): number {
   return Math.min(12, Math.max(6, Math.round(termHeight * 0.22)));
+}
+
+/**
+ * Rows occupied by pi's bottom dock — queued messages, status, widgets, the
+ * input editor and the footer. Pi mounts the transcript container first and the
+ * dock after it (interactive-mode `mountInteractiveTui`), so everything past
+ * the first child is dock. Returns 0 when that shape is not recognized, which
+ * makes the caller fall back to `bottomBand`.
+ *
+ * Measuring beats guessing: a fixed 22% band is smaller than the dock as soon
+ * as a widget, status row or multi-line prompt appears, and the overlay then
+ * paints over the top of the input editor.
+ */
+function dockRows(tui: TUI | null, width: number): number {
+  const children = (tui as { children?: Component[] } | null)?.children;
+  if (!Array.isArray(children) || children.length < 2) return 0;
+  let rows = 0;
+  try {
+    for (const child of children.slice(1)) {
+      rows += Math.max(0, child.render(Math.max(1, width)).length);
+    }
+  } catch {
+    return 0;
+  }
+  return rows;
+}
+
+/** Rows to leave uncovered at the bottom of the overlay. */
+function reservedRows(tui: TUI | null, termWidth: number, termHeight: number): number {
+  const measured = dockRows(tui, termWidth);
+  // Keep at least 8 rows of cover so the surface still hides the run.
+  if (measured > 0) return Math.min(measured, Math.max(1, termHeight - 8));
+  return bottomBand(termHeight);
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +494,33 @@ class SpaiDashboard implements Component {
 // Overlay lifecycle
 // ---------------------------------------------------------------------------
 
+/**
+ * Shared overlay options: full width from the top, and a bottom band sized
+ * from pi's measured dock so the input editor and footer stay visible.
+ * `nonCapturing` is true only for the passive cover.
+ */
+function overlayOptions(kind: KlidView): Parameters<ExtensionContext["ui"]["custom"]>[1] {
+  return {
+    overlay: true,
+    overlayOptions: {
+      anchor: "top-left",
+      width: "100%",
+      nonCapturing: kind === "cover",
+      // Measure pi's real dock every cycle (queued messages, status, widgets,
+      // editor, footer) and reserve exactly that many rows, so the input
+      // editor and footer are never painted over — no matter how tall the
+      // dock grows or how many lines the prompt has.
+      visible: (w, h) => {
+        lastCoverHeight = Math.max(8, h - reservedRows(overlayTui, w, h));
+        return true;
+      },
+    },
+    onHandle: (handle) => {
+      overlayHandle = handle;
+    },
+  };
+}
+
 function openOverlay(ctx: ExtensionContext, kind: KlidView): void {
   if (overlayActive) return;
   if (ctx.mode !== "tui" || !ctx.hasUI) return;
@@ -463,6 +535,7 @@ function openOverlay(ctx: ExtensionContext, kind: KlidView): void {
         }
       };
       releaseOverlay = close;
+      overlayTui = tui;
       if (kind === "spai") return new SpaiDashboard(tui, theme, ctx.cwd, close);
       if (kind === "kanban") {
         return new KanbanBoard({
@@ -474,21 +547,7 @@ function openOverlay(ctx: ExtensionContext, kind: KlidView): void {
       }
       return new QuietCover(theme);
     },
-    {
-      overlay: true,
-      overlayOptions: {
-        anchor: "top-left",
-        width: "100%",
-        // The cover is passive; the SPAI views capture keys for navigation.
-        nonCapturing: kind === "cover",
-        // Capture the real terminal height each cycle and reserve the bottom
-        // band (working row + input + footer) so it stays visible and clean.
-        visible: (_w, h) => {
-          lastCoverHeight = Math.max(8, h - bottomBand(h));
-          return true;
-        },
-      },
-    },
+    overlayOptions(kind),
   );
 
   overlayActive = true;
@@ -497,15 +556,227 @@ function openOverlay(ctx: ExtensionContext, kind: KlidView): void {
     .finally(() => {
       overlayActive = false;
       releaseOverlay = null;
+      overlayHandle = null;
+      overlayTui = null;
     });
 }
 
-function closeOverlay(): void {
-  if (releaseOverlay) {
-    const release = releaseOverlay;
+// ---------------------------------------------------------------------------
+// Kanban view: delegate to pi-spai's own board when it is installed
+// ---------------------------------------------------------------------------
+
+/**
+ * pi-spai's board renders its own fixed height (10 task rows). The quiet cover
+ * must stay opaque, so wrap it: same content and colors, padded to the whole
+ * reserved transcript region so nothing shows through underneath.
+ */
+function padToCover(inner: Component, width: number): string[] {
+  const rows = Math.max(8, lastCoverHeight);
+  const W = Math.max(1, width);
+  const lines = inner.render(W).slice(0, rows).map((line) => {
+    const v = visibleWidth(line);
+    if (v >= W) return truncateToWidth(line, W, "");
+    return line + " ".repeat(W - v);
+  });
+  while (lines.length < rows) lines.push(" ".repeat(W));
+  return lines;
+}
+
+/**
+ * pi-spai's board is the same component `/spai board` uses, so the quiet view
+ * cannot drift from it. Its `onNewTask` / `onOpenRecord` / `onRealizeRecord`
+ * callbacks close the board and hand the request back here; we then run the
+ * same flows pi-spai runs and reopen the board while the run is still going.
+ */
+async function runDelegatedKanban(ctx: ExtensionContext, mod: SpaiBoardModule): Promise<void> {
+  while (!overlayActive) {
+    let index: unknown;
+    try {
+      index = await mod.loadIndex(ctx.cwd);
+    } catch {
+      return;
+    }
+
+    let requestKind: "none" | "new" | "open" | "realize" = "none";
+    let requestRecord: SpaiBoardRecord | null = null;
+
+    const view = ctx.ui.custom<void>(
+      (tui, _theme, _kb, done) => {
+        const close = () => {
+          try {
+            done(undefined);
+          } catch {
+            // Overlay already closed.
+          }
+        };
+        releaseOverlay = close;
+        overlayTui = tui;
+        const board = new mod.BoardComponent({
+          cwd: ctx.cwd,
+          index,
+          onClose: close,
+          onRequestRender: () => tui.requestRender(),
+          onNewTask: () => {
+            requestKind = "new";
+            close();
+          },
+          onOpenRecord: (record: SpaiBoardRecord) => {
+            requestKind = "open";
+            requestRecord = record;
+            close();
+          },
+          onRealizeRecord: (record: SpaiBoardRecord) => {
+            requestKind = "realize";
+            requestRecord = record;
+            close();
+          },
+        });
+        return {
+          invalidate: () => board.invalidate(),
+          handleInput: (data: string) => board.handleInput?.(data),
+          render: (width: number) => padToCover(board, width),
+        };
+      },
+      overlayOptions("kanban"),
+    );
+
+    overlayActive = true;
+    await view.catch(() => undefined);
+    overlayActive = false;
     releaseOverlay = null;
-    release();
+    overlayHandle = null;
+    overlayTui = null;
+
+    if (requestKind === "none") return;
+
+    if (requestKind === "new") {
+      await runNewItemFlow(ctx, mod);
+    } else if (requestKind === "open" && requestRecord) {
+      // pi-spai's board reopens after the reader closes (and its reader can
+      // hand the item to the prompt with `r`).
+      const outcome = await showReaderOverlay(ctx, mod, requestRecord);
+      if (outcome === "realize") {
+        realizeFromBoard(ctx, requestRecord);
+        return;
+      }
+    } else if (requestRecord) {
+      realizeFromBoard(ctx, requestRecord);
+      return;
+    }
+
+    // Reopen the board only while the agent is still working; once it settles
+    // the answer belongs on screen, not behind a board.
+    if (ctx.isIdle()) return;
   }
+}
+
+/** Same capture flow as pi-spai's `/spai new`: one input, SPAI prefix syntax. */
+async function runNewItemFlow(ctx: ExtensionContext, mod: SpaiBoardModule): Promise<void> {
+  if (!ctx.hasUI) return;
+  let text = "";
+  try {
+    const input = await ctx.ui.input(
+      "Enter a task (. ), an idea (? ) or a note (- ):",
+      ". ",
+    );
+    text = input?.trim() ?? "";
+  } catch {
+    return;
+  }
+  if (!text) return;
+
+  try {
+    const saved = await mod.saveRecord(ctx.cwd, text);
+    ctx.ui.notify(
+      `Created ${pinkGlow(saved.id)}: ${saved.title}`,
+      "info",
+    );
+  } catch (err) {
+    ctx.ui.notify(
+      `Save failed: ${err instanceof Error ? err.message : String(err)}`,
+      "warning",
+    );
+  }
+}
+
+/** Read-only view built from pi-spai's own reading-mode formatter. */
+async function showReaderOverlay(
+  ctx: ExtensionContext,
+  mod: SpaiBoardModule,
+  record: SpaiBoardRecord,
+): Promise<"back" | "realize"> {
+  if (ctx.mode !== "tui" || !ctx.hasUI) return "back";
+  const text = mod.formatReadingMode(record);
+  let outcome: "back" | "realize" = "back";
+  await ctx.ui.custom<void>(
+    (_tui, theme, _kb, done) => {
+      const component: Component = {
+        invalidate: () => {},
+        render: (width: number) => {
+          const inner = Math.max(20, width);
+          const lines = text.split("\n").map((l) => l.slice(0, inner));
+          const hint = theme.fg("dim", "esc — back · r — realize");
+          const body = Math.max(6, lastCoverHeight - 2);
+          const out = lines.slice(0, body);
+          while (out.length < body) out.push("");
+          out.push(hint);
+          return out.map((l) => l.padEnd(inner));
+        },
+        handleInput: (data: string) => {
+          if (data === "r") {
+            outcome = "realize";
+            done(undefined);
+            return;
+          }
+          if (matchesKey(data, "escape") || matchesKey(data, "return") || data === "q") {
+            done(undefined);
+          }
+        },
+      };
+      return component;
+    },
+    {
+      overlay: true,
+      overlayOptions: {
+        anchor: "top-left",
+        width: "100%",
+        visible: (w, h) => {
+          lastCoverHeight = Math.max(8, h - reservedRows(overlayTui, w, h));
+          return true;
+        },
+      },
+    },
+  );
+  return outcome;
+}
+
+/** Mirrors pi-spai's `r` (realize): put the item in the prompt, do not send it. */
+function realizeFromBoard(ctx: ExtensionContext, record: SpaiBoardRecord): void {
+  if (!ctx.hasUI) return;
+  try {
+    ctx.ui.setEditorText(formatRealizePrompt(record));
+    ctx.ui.notify(`Inserted ${pinkGlow(record.id)} into the prompt.`, "info");
+  } catch {
+    // Editor not reachable (non-TUI host) — nothing else to do.
+  }
+}
+
+function closeOverlay(): void {
+  const release = releaseOverlay;
+  releaseOverlay = null;
+  if (release) {
+    release();
+  } else {
+    // Stale overlay with a lost release callback (e.g. after an extension
+    // reload): remove it directly so it cannot keep covering the editor.
+    try {
+      overlayHandle?.hide();
+    } catch {
+      // Already gone.
+    }
+  }
+  overlayHandle = null;
+  overlayTui = null;
   overlayActive = false;
 }
 
@@ -565,6 +836,9 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    // A fresh/rebound session must never inherit a stale overlay that would
+    // keep covering the editor while the agent is idle.
+    closeOverlay();
     const cfg = loadConfig();
     klidEnabled = cfg.enabled;
     klidView = cfg.view;
@@ -576,6 +850,14 @@ export default function (pi: ExtensionAPI): void {
   pi.on("agent_start", async (_event, ctx) => {
     if (!klidEnabled) return;
     applyQuietUi(ctx, true);
+    if (klidView === "kanban") {
+      // Prefer pi-spai's own board; the local one is only a fallback.
+      const mod = await loadSpaiBoard();
+      if (mod) {
+        void runDelegatedKanban(ctx, mod);
+        return;
+      }
+    }
     openOverlay(ctx, klidView);
   });
 
@@ -583,6 +865,7 @@ export default function (pi: ExtensionAPI): void {
   // exactly when the user can look at the answer again.
   pi.on("agent_settled", async (_event, ctx) => {
     if (!klidEnabled) {
+      closeOverlay();
       if (workingTouched) applyQuietUi(ctx, false);
       return;
     }

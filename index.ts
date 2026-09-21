@@ -23,7 +23,7 @@ import type {
   ExtensionContext,
   Theme,
 } from "@earendil-works/pi-coding-agent";
-import { matchesKey, type AutocompleteItem, type Component, type TUI } from "@earendil-works/pi-tui";
+import { type AutocompleteItem, type Component } from "@earendil-works/pi-tui";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -42,11 +42,6 @@ const COMMAND_DOCS: Record<string, string> = {
   status: "show current quiet state",
   help: "display this reference banner",
 };
-
-/** Slow breathing cycle in milliseconds. */
-const BREATH_MS = 5600;
-/** Animation refresh rate (slow, calm — 10 fps is plenty). */
-const FRAME_MS = 100;
 
 // ---------------------------------------------------------------------------
 // State
@@ -84,61 +79,35 @@ function saveConfig(cfg: KlidConfig): void {
 }
 
 // ---------------------------------------------------------------------------
-// Breathing animation frames (fallback working indicator, non-TUI modes)
+// Static working indicator (fallback for non-TUI modes). Single dim frame —
+// deliberately unanimated: it signals work without rewarding watching.
 // ---------------------------------------------------------------------------
 
-function breathingFrames(theme: Theme): { frames: string[]; intervalMs: number } {
-  const d = (c: string) => theme.fg("dim", c);
-  const m = (c: string) => theme.fg("muted", c);
-  const a = (c: string) => theme.fg("accent", c);
-  // Slow inhale → peak → exhale, rendered with dim/muted/accent depth.
-  return {
-    frames: [d("·"), m("•"), a("●"), m("•"), d("·"), d("·"), d("·"), d("·")],
-    intervalMs: 700,
-  };
+function quietWorkingIndicator(theme: Theme): { frames: string[]; intervalMs: number } {
+  return { frames: [theme.fg("dim", "·")], intervalMs: 1000 };
 }
 
 // ---------------------------------------------------------------------------
 // Full-screen breathing overlay
 // ---------------------------------------------------------------------------
 
-class BreathingComponent implements Component {
-  private tui: TUI;
+/**
+ * Static, opaque full-screen cover. Renders a single dim "Working..." line at
+ * the vertical center. No animation, no color cycling, no timers — there is
+ * nothing to stare at; it only signals that work is in progress.
+ */
+class QuietCover implements Component {
   private theme: Theme;
-  private closed = false;
-  private release: () => void;
-  private interval: ReturnType<typeof setInterval> | null = null;
 
-  constructor(tui: TUI, theme: Theme, release: () => void) {
-    this.tui = tui;
+  constructor(theme: Theme) {
     this.theme = theme;
-    this.release = release;
-    this.interval = setInterval(() => {
-      if (!this.closed) this.tui.requestRender();
-    }, FRAME_MS);
   }
 
   // Called when the process re-renders after theme changes etc.
   invalidate(): void {}
 
-  dispose(): void {
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = null;
-    }
-  }
-
-  handleInput(data: string): void {
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
-      this.close();
-    }
-  }
-
-  private close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.dispose();
-    this.release();
+  handleInput(): void {
+    // Overlay is non-capturing; nothing to handle.
   }
 
   render(width: number): string[] {
@@ -149,45 +118,12 @@ class BreathingComponent implements Component {
     // Character grid for the whole screen so the cover is opaque everywhere.
     const grid: string[][] = Array.from({ length: H }, () => Array<string>(W).fill(" "));
 
-    const t = (Date.now() % BREATH_MS) / BREATH_MS;
-    const breath = Math.sin(2 * Math.PI * t); // -1 exhale … +1 inhale peak
-    const cx = Math.floor(W / 2);
-    const cy = Math.floor(H / 2) - 1;
-
-    // Ring radius breathes slowly between ~1.1 and ~2.5.
-    const radius = 1.1 + 1.4 * (0.5 + 0.5 * breath);
-
-    const paintRing = (r: number, ch: string): void => {
-      if (r < 0.4) return;
-      const span = Math.ceil(r + 1);
-      for (let dy = -span; dy <= span; dy++) {
-        for (let dx = -span; dx <= span; dx++) {
-          const d = Math.hypot(dx, dy);
-          if (Math.abs(d - r) < 0.45) {
-            const px = cx + dx;
-            const py = cy + dy;
-            if (px >= 0 && px < W && py >= 0 && py < H) grid[py]![px] = ch;
-          }
-        }
-      }
-    };
-
-    // Echo rings fade at the edges of the breath; main ring is accent.
-    paintRing(radius - 1.15, th.fg("muted", "○"));
-    paintRing(radius + 1.15, th.fg("muted", "○"));
-    paintRing(radius, th.fg("accent", "●"));
-    if (radius < 1.45) grid[cy]![cx] = th.fg("dim", "·");
-
-    // "Working…" beneath the orb — dots count with the breath, color deepens.
-    const light = 0.5 + 0.5 * breath;
-    const dots = ".".repeat(1 + Math.floor(1 + light)); // 1..3 dots at peak
-    const wordColor = light > 0.66 ? "accent" : light > 0.33 ? "muted" : "dim";
-    const word = `Working${dots}`;
-    const wordX = Math.max(0, Math.floor((W - word.length) / 2));
-    const wordY = cy + Math.ceil(radius) + 2;
-    if (wordY < H) {
-      for (let i = 0; i < word.length && wordX + i < W; i++) {
-        grid[wordY]![wordX + i] = th.fg(wordColor as "accent" | "muted" | "dim", word[i]!);
+    const word = "Working...";
+    const x = Math.max(0, Math.floor((W - word.length) / 2));
+    const y = Math.floor(H / 2);
+    if (y < H) {
+      for (let i = 0; i < word.length && x + i < W; i++) {
+        grid[y]![x + i] = th.fg("dim", word[i]!);
       }
     }
 
@@ -204,14 +140,7 @@ function openOverlay(ctx: ExtensionContext): void {
   if (ctx.mode !== "tui" || !ctx.hasUI) return;
 
   const view = ctx.ui.custom<void>(
-    (tui, theme, _kb, done) => {
-      const component = new BreathingComponent(tui, theme, () => {
-        try {
-          done(undefined);
-        } catch {
-          // Overlay already closed.
-        }
-      });
+    (_tui, theme, _kb, done) => {
       releaseOverlay = () => {
         try {
           done(undefined);
@@ -219,7 +148,7 @@ function openOverlay(ctx: ExtensionContext): void {
           // Overlay already closed.
         }
       };
-      return component;
+      return new QuietCover(theme);
     },
     {
       overlay: true,
@@ -262,7 +191,7 @@ function applyQuietUi(ctx: ExtensionContext, running: boolean): void {
   if (!ctx.hasUI) return;
   if (running) {
     ctx.ui.setWorkingMessage("Working...");
-    ctx.ui.setWorkingIndicator(breathingFrames(ctx.ui.theme));
+    ctx.ui.setWorkingIndicator(quietWorkingIndicator(ctx.ui.theme));
     workingTouched = true;
   } else {
     ctx.ui.setWorkingMessage();

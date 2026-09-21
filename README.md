@@ -12,16 +12,17 @@ done, the animation dissolves and only the clean final answer appears.
 | While `/klid on` | Behavior |
 |---|---|
 | Thinking blocks | Hidden at the render level — live and in history. Display-only; model context and the session transcript are untouched (`registerMarkdownTransformer` returns `""` for `assistant-thinking`). |
-| Tool activity | Covered by a full-screen breathing overlay opened on `agent_start`. Every tool call, bash box, and streamed update stays out of sight until the agent settles. |
+| Tool activity | Covered by a full-screen quiet cover opened on `agent_start`. Every tool call, bash box, and streamed update stays out of sight until the agent settles. |
 | Final answer | Revealed automatically when the agent fully settles (after retries, compaction, and queued continuations have finished). |
 
-The breathing animation is a slowly pulsing ring (accent echo rings on `muted`
-tones) above **Working...** whose dot-count and brightness follow one breath
-cycle (~5.6 s). It runs at a calm 10 fps.
+The cover is deliberately *unanimated*: a single dim **Working...** line at the
+vertical center of the full screen. No pulsing, no color cycling, no dot
+progress — it signals that work is in progress without offering anything to
+stare at, so it does not hold your attention while you wait.
 
 In non-TUI modes where overlays cannot render (`--mode rpc`, `--mode json`,
-`--mode print`) the plugin falls back to the built-in working row: a breathing
-**Working...** message with an animated breathing indicator.
+`--mode print`) the plugin falls back to the built-in working row: a static
+**Working...** message with a single dim dot.
 
 ## Install
 
@@ -48,10 +49,11 @@ next session start, so you can leave quiet mode on permanently.
   display-only hook: the original message stays unchanged in session and model
   context.
 - **Overlay cover** — `agent_start` calls `ctx.ui.custom(..., { overlay: true })`
-  with a full-screen, non-capturing `BreathingComponent` (anchor `top-left`,
+  with a full-screen, non-capturing `QuietCover` (anchor `top-left`,
   `width: "100%"`, dynamic `maxHeight: "100%"`). The terminal height is captured
   each render cycle via the overlay's `visible` callback so the cover always
-  fills the screen.
+  fills the screen. The cover is static by design — no timers run while it is
+  shown.
 - **Settle reveal** — `agent_settled` fires only when no retry / compaction /
   queued continuation remains; the plugin then calls the overlay's `done()` and
   restores the default working row and spinner. `input` and `session_shutdown`

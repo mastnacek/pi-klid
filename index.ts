@@ -2,19 +2,22 @@
  * pi-klid — Quiet zen mode for the pi coding agent.
  *
  * `/klid on` hides thinking blocks at the render level and, while the agent is
- * running, covers every tool call / streaming update behind a slow breathing
- * "Working..." animation. When the agent settles, the overlay dissolves and
- * only the clean final answer is revealed. Nothing disturbs you in between.
+ * running, covers every tool call / streaming update behind a quiet surface:
+ * either the static "Working..." cover or a live SPAI task dashboard. When the
+ * agent settles, the overlay dissolves and only the clean final answer is
+ * revealed. Nothing disturbs you in between.
  *
  * Usage:
  *   /klid            — help banner
  *   /klid on         — enable quiet mode
  *   /klid off        — disable quiet mode
  *   /klid toggle     — flip quiet mode
+ *   /klid view spai  — show the SPAI task dashboard while working
+ *   /klid view cover — show the static quiet cover while working
  *   /klid status     — show current state
  *
- * The enabled state persists to ~/.pi/agent/pi-klid.json and is restored on
- * session start.
+ * The enabled state + view persist to ~/.pi/agent/pi-klid.json and are
+ * restored on session start.
  */
 
 import type {
@@ -23,13 +26,31 @@ import type {
   ExtensionContext,
   Theme,
 } from "@earendil-works/pi-coding-agent";
-import { type AutocompleteItem, type Component } from "@earendil-works/pi-tui";
+import {
+  matchesKey,
+  type AutocompleteItem,
+  type Component,
+  type TUI,
+} from "@earendil-works/pi-tui";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+  cycleStatus,
+  loadIndex,
+  parseSpai,
+  readRecordBody,
+  saveRecord,
+  updateRecordStatus,
+  type SpaiIndexEntry,
+  type SpaiStatus,
+} from "./spai.js";
+
+type KlidView = "cover" | "spai";
 
 interface KlidConfig {
   enabled: boolean;
+  view: KlidView;
 }
 
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "pi-klid.json");
@@ -39,6 +60,7 @@ const COMMAND_DOCS: Record<string, string> = {
   on: "enable quiet mode",
   off: "disable quiet mode",
   toggle: "flip quiet mode",
+  view: "select working view (cover | spai)",
   status: "show current quiet state",
   help: "display this reference banner",
 };
@@ -48,6 +70,7 @@ const COMMAND_DOCS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 let klidEnabled = false;
+let klidView: KlidView = "cover";
 let overlayActive = false;
 let releaseOverlay: (() => void) | null = null; // closes the live overlay
 let workingTouched = false; // we customized the working row
@@ -69,18 +92,21 @@ function loadConfig(): KlidConfig {
   try {
     if (existsSync(CONFIG_PATH)) {
       const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<KlidConfig>;
-      return { enabled: raw.enabled === true };
+      return {
+        enabled: raw.enabled === true,
+        view: raw.view === "spai" ? "spai" : "cover",
+      };
     }
   } catch {
     // Corrupt/missing config — non-fatal, default to off.
   }
-  return { enabled: false };
+  return { enabled: false, view: "cover" };
 }
 
 function saveConfig(cfg: KlidConfig): void {
   try {
     mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+    writeFileSync(CONFIG_PATH, JSON.stringify({ enabled: cfg.enabled, view: cfg.view }, null, 2) + "\n", "utf8");
   } catch {
     // Non-fatal: persistence is best-effort.
   }
@@ -141,30 +167,309 @@ class QuietCover implements Component {
 }
 
 // ---------------------------------------------------------------------------
+// SPAI dashboard overlay (interactive; shown instead of the cover while working)
+// ---------------------------------------------------------------------------
+
+const SPAI_GLYPH: Record<string, string> = {
+  todo: "○",
+  working: "◐",
+  waiting: "⏳",
+  done: "✓",
+  cancelled: "✗",
+  idea: "💡",
+  note: "•",
+  inbox: "•",
+};
+
+function spaiStatusColor(s: SpaiStatus): "accent" | "dim" | "muted" | "text" | "warning" {
+  switch (s) {
+    case "working":
+      return "accent";
+    case "waiting":
+      return "warning";
+    case "idea":
+      return "warning";
+    case "done":
+    case "cancelled":
+    case "note":
+      return "dim";
+    case "inbox":
+      return "muted";
+    default:
+      return "text";
+  }
+}
+
+function wrapText(text: string, w: number): string[] {
+  const out: string[] = [];
+  for (const para of text.split("\n")) {
+    if (para.length === 0) {
+      out.push("");
+      continue;
+    }
+    let cur = "";
+    let curLen = 0;
+    for (const word of para.split(/(\s+)/)) {
+      const l = word.length;
+      if (curLen + l > w && cur.length > 0) {
+        out.push(cur);
+        cur = "";
+        curLen = 0;
+      }
+      cur += word;
+      curLen += l;
+    }
+    if (cur) out.push(cur);
+  }
+  return out;
+}
+
+/**
+ * Interactive SPAI backlog dashboard. Loads every SPAI task/idea/note from the
+ * project's docs/spai ledger and lets the user browse it, add new items, cycle
+ * statuses, and read full details while the agent keeps working in the
+ * background. Data is written back through the same SPAI file format pi-spai
+ * uses, so anything recorded here shows up in /spai too.
+ */
+class SpaiDashboard implements Component {
+  private tui: TUI;
+  private theme: Theme;
+  private cwd: string;
+  private close: () => void;
+  private items: SpaiIndexEntry[] = [];
+  private selected = 0;
+  private offset = 0;
+  private mode: "browse" | "add" | "detail" = "browse";
+  private addBuf = "";
+  private detailTitle = "";
+  private detailBody = "";
+  private notice = "";
+
+  constructor(tui: TUI, theme: Theme, cwd: string, close: () => void) {
+    this.tui = tui;
+    this.theme = theme;
+    this.cwd = cwd;
+    this.close = close;
+    this.reload();
+  }
+
+  // Called when the process re-renders after theme changes etc.
+  invalidate(): void {}
+
+  dispose(): void {}
+
+  private reload(): void {
+    try {
+      const records = loadIndex(this.cwd).records;
+      const rank = (s: SpaiStatus) => (s === "done" || s === "cancelled" ? 1 : 0);
+      this.items = [...records].sort((a, b) => rank(a.status) - rank(b.status));
+    } catch {
+      this.items = [];
+    }
+    if (this.selected > Math.max(0, this.items.length - 1)) {
+      this.selected = Math.max(0, this.items.length - 1);
+    }
+  }
+
+  private move(delta: number): void {
+    if (this.items.length === 0) return;
+    this.selected = Math.max(0, Math.min(this.items.length - 1, this.selected + delta));
+  }
+
+  private toggleSelected(): void {
+    const it = this.items[this.selected];
+    if (!it) return;
+    const next = cycleStatus(it.status, it.type);
+    try {
+      if (updateRecordStatus(this.cwd, it.id, next)) {
+        this.notice = `${it.id} → ${next}`;
+        this.reload();
+      } else {
+        this.notice = `${it.id}: update failed`;
+      }
+    } catch {
+      this.notice = "update failed";
+    }
+  }
+
+  private openDetail(): void {
+    const it = this.items[this.selected];
+    if (!it) return;
+    this.detailTitle = `${it.id}: ${it.title}`;
+    this.detailBody = readRecordBody(this.cwd, it);
+    this.mode = "detail";
+  }
+
+  private handleAdd(data: string): void {
+    if (matchesKey(data, "escape")) {
+      this.mode = "browse";
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "return")) {
+      const text = this.addBuf.trim();
+      if (text) {
+        try {
+          const saved = saveRecord(this.cwd, text);
+          this.reload();
+          const idx = this.items.findIndex((e) => e.id === saved.id);
+          this.selected = idx >= 0 ? idx : this.selected;
+          this.notice = `saved ${saved.id}: ${saved.title}`;
+        } catch (err) {
+          this.notice = `save failed: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+      this.mode = "browse";
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "backspace")) {
+      this.addBuf = this.addBuf.slice(0, -1);
+      this.tui.requestRender();
+      return;
+    }
+    if (data.length >= 1 && data.charCodeAt(0) >= 32) {
+      this.addBuf += data;
+      this.tui.requestRender();
+    }
+  }
+
+  handleInput(data: string): void {
+    if (this.mode === "add") {
+      this.handleAdd(data);
+      return;
+    }
+    if (this.mode === "detail") {
+      if (matchesKey(data, "escape") || matchesKey(data, "return")) {
+        this.mode = "browse";
+        this.tui.requestRender();
+      }
+      return;
+    }
+
+    if (matchesKey(data, "escape")) {
+      this.close();
+      return;
+    }
+    if (matchesKey(data, "up") || data === "k") {
+      this.move(-1);
+    } else if (matchesKey(data, "down") || data === "j") {
+      this.move(1);
+    } else if (data === "n") {
+      this.mode = "add";
+      this.addBuf = "";
+      this.notice = "";
+      this.tui.requestRender();
+      return;
+    } else if (data === "r") {
+      this.reload();
+      this.notice = `index reloaded (${this.items.length} items)`;
+    } else if (data === "x" && this.items.length > 0) {
+      this.toggleSelected();
+    } else if (matchesKey(data, "return") && this.items.length > 0) {
+      this.openDetail();
+    }
+    this.tui.requestRender();
+  }
+
+  render(width: number): string[] {
+    const th = this.theme;
+    const W = Math.max(24, width);
+    const H = Math.max(10, lastCoverHeight);
+    const grid: string[][] = Array.from({ length: H }, () => Array<string>(W).fill(" "));
+    let row = 0;
+    const sink = (s: string) => {
+      if (row >= H) return;
+      for (let i = 0; i < s.length && i < W; i++) grid[row]![i] = s[i]!;
+      row++;
+    };
+    const open = this.items.filter(
+      (i) => i.status !== "done" && i.status !== "cancelled",
+    ).length;
+
+    sink(`${th.fg("accent", "SPAI")} backlog · ${open} open / ${this.items.length} total`);
+    sink("");
+
+    if (this.mode === "detail") {
+      sink(th.fg("accent", `# ${this.detailTitle}`));
+      sink("");
+      const lines = wrapText(this.detailBody, W - 2);
+      for (const ln of lines) {
+        if (row >= H - 3) break;
+        sink(th.fg("text", ln));
+      }
+    } else {
+      const maxRows = H - 5;
+      const more = this.items.length > maxRows;
+      if (this.selected < this.offset) this.offset = this.selected;
+      if (this.selected >= this.offset + maxRows) {
+        this.offset = Math.max(0, this.selected - maxRows + 1);
+      }
+      const list = this.items.slice(this.offset, this.offset + maxRows);
+      for (const it of list) {
+        const sel = it.id === this.items[this.selected]?.id;
+        const mark = sel ? th.fg("accent", "›") : " ";
+        const glyph = th.fg(spaiStatusColor(it.status), SPAI_GLYPH[it.status] ?? "•");
+        let line = `${mark} ${glyph} ${sel ? th.bold(it.title) : it.title}`;
+        if (it.tags.length > 0) line += th.fg("muted", ` [${it.tags.join(",")}]`);
+        if (it.priority === "high") line += th.fg("warning", " !");
+        if (it.deadline) line += th.fg("dim", ` @${it.deadline}`);
+        sink(line);
+      }
+      if (this.items.length === 0) {
+        sink(th.fg("dim", "  (no SPAI items yet — press n to add one)"));
+      } else if (more) {
+        sink(th.fg("dim", `${this.offset + 1}-${Math.min(this.items.length, this.offset + maxRows)} of ${this.items.length}`));
+      }
+    }
+
+    if (!this.notice || row < H - 1) sink("");
+    if (this.notice) sink(th.fg("muted", this.notice));
+
+    if (this.mode === "add") {
+      const preview = parseSpai(this.addBuf);
+      sink(th.fg("muted", `${preview.type}/${preview.status}`) + `  new> ${this.addBuf}${th.fg("accent", "▌")}`);
+      sink(th.fg("dim", "prefix: . todo · / working · ? idea · - note · !priority @deadline :tags:"));
+      sink(th.fg("dim", "enter save · esc cancel"));
+    } else if (this.mode === "detail") {
+      sink(th.fg("dim", "esc / enter — back to list"));
+    } else {
+      sink(th.fg("dim", "↑↓ browse · n new · x status · enter detail · r refresh · esc close"));
+    }
+
+    return grid.map((r) => r.join(""));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Overlay lifecycle
 // ---------------------------------------------------------------------------
 
-function openOverlay(ctx: ExtensionContext): void {
+function openOverlay(ctx: ExtensionContext, kind: KlidView): void {
   if (overlayActive) return;
   if (ctx.mode !== "tui" || !ctx.hasUI) return;
 
   const view = ctx.ui.custom<void>(
-    (_tui, theme, _kb, done) => {
-      releaseOverlay = () => {
+    (tui, theme, _kb, done) => {
+      const close = () => {
         try {
           done(undefined);
         } catch {
           // Overlay already closed.
         }
       };
-      return new QuietCover(theme);
+      releaseOverlay = close;
+      return kind === "spai"
+        ? new SpaiDashboard(tui, theme, ctx.cwd, close)
+        : new QuietCover(theme);
     },
     {
       overlay: true,
       overlayOptions: {
         anchor: "top-left",
         width: "100%",
-        maxHeight: "100%",
+        // The cover is passive; the SPAI dashboard captures keys for navigation.
+        nonCapturing: kind === "cover",
         // Capture the real terminal height each cycle and reserve the bottom
         // band (working row + input + footer) so it stays visible and clean.
         visible: (_w, h) => {
@@ -212,13 +517,24 @@ function applyQuietUi(ctx: ExtensionContext, running: boolean): void {
 
 function setEnabled(ctx: ExtensionContext, on: boolean): void {
   klidEnabled = on;
-  saveConfig({ enabled: on });
+  saveConfig({ enabled: on, view: klidView });
   if (ctx.hasUI) {
     ctx.ui.setStatus(STATUS_KEY, on ? "quiet" : undefined);
   }
   if (on) {
-    // Make sure the breathing row is armed for the next run.
+    // Make sure the quiet working row is armed for the next run.
     applyQuietUi(ctx, false);
+  }
+}
+
+function setView(ctx: ExtensionContext, view: KlidView): void {
+  klidView = view;
+  saveConfig({ enabled: klidEnabled, view });
+  if (ctx.hasUI) {
+    ctx.ui.notify(
+      `klid: working view → ${view === "spai" ? "SPAI dashboard" : "quiet cover"}`,
+      "info",
+    );
   }
 }
 
@@ -237,6 +553,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     const cfg = loadConfig();
     klidEnabled = cfg.enabled;
+    klidView = cfg.view;
     if (ctx.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, klidEnabled ? "quiet" : undefined);
     }
@@ -245,7 +562,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on("agent_start", async (_event, ctx) => {
     if (!klidEnabled) return;
     applyQuietUi(ctx, true);
-    openOverlay(ctx);
+    openOverlay(ctx, klidView);
   });
 
   // Fully settles only when no retry/compaction/continuation is left — that is
@@ -273,8 +590,29 @@ export default function (pi: ExtensionAPI): void {
     description: "Quiet zen mode: hide thinking and tool activity behind a breathing Working... animation",
     getArgumentCompletions: async (prefix: string): Promise<AutocompleteItem[] | null> => {
       const tokens = prefix.split(/\s+/).filter(Boolean);
-      // Second-level arguments for /klid are booleans/literals; no completion needed.
-      if (tokens.length > 1 || (/\s$/.test(prefix) && tokens.length === 1)) return null;
+      const trailing = /\s$/.test(prefix);
+
+      // Second level: view/dashboard accept cover|spai.
+      if (tokens.length === 2 || (trailing && tokens.length === 1)) {
+        const cmd = (tokens[0] ?? "").toLowerCase();
+        if (cmd === "view" || cmd === "dashboard") {
+          const typed = (tokens[1] ?? "").toLowerCase();
+          const opts = ["spai", "cover"]
+            .filter((v) => v.startsWith(typed))
+            .map((v) => ({
+              value: `view ${v}`,
+              label: `view ${v}`,
+              description:
+                v === "spai"
+                  ? "show SPAI task dashboard while working (interactive)"
+                  : "static quiet cover while working (passive)",
+            }));
+          return opts.length > 0 ? opts : null;
+        }
+        return null;
+      }
+      if (tokens.length > 2) return null;
+
       const typed = (tokens[0] ?? "").toLowerCase();
       const items = Object.entries(COMMAND_DOCS)
         .filter(([key]) => key.toLowerCase().startsWith(typed))
@@ -288,18 +626,20 @@ export default function (pi: ExtensionAPI): void {
       const helpText = [
         "# pi-klid — Quiet Mode",
         "Hides thinking blocks and every tool-call / streaming update behind a",
-        "slow breathing \"Working...\" animation until the agent settles.",
+        "quiet surface while the agent works — either a static \"Working...\"",
+        "cover or a live SPAI task dashboard.",
         "",
         "### Commands:",
-        "  /klid on          — Enable quiet mode",
-        "  /klid off         — Disable quiet mode",
-        "  /klid toggle      — Flip quiet mode",
-        "  /klid status      — Show current quiet state",
-        "  /klid help        — Display this reference banner",
+        "  /klid on                — Enable quiet mode",
+        "  /klid off               — Disable quiet mode",
+        "  /klid toggle            — Flip quiet mode",
+        "  /klid view spai|cover   — Working view: live SPAI dashboard | static cover",
+        "  /klid status            — Show current quiet state",
+        "  /klid help              — Display this reference banner",
         "",
         "While enabled, thinking never renders (live or history). Tool",
         "activity is covered while the agent works; only the final answer",
-        "appears when it settles. State persists across sessions.",
+        "appears when it settles. State + view persist across sessions.",
       ].join("\n");
 
       if (!sub || sub === "help" || sub === "-h" || sub === "--help") {
@@ -322,10 +662,23 @@ export default function (pi: ExtensionAPI): void {
           if (!klidEnabled) applyQuietUi(ctx, false);
           ctx.ui.notify(`klid: quiet mode ${klidEnabled ? "ON" : "OFF"}`, "info");
           break;
+        case "view":
+        case "dashboard": {
+          const target = (tokens[1] ?? "").toLowerCase();
+          if (target === "spai" || target === "cover") {
+            setView(ctx, target);
+          } else {
+            ctx.ui.notify(`klid: working view is \"${klidView}\". Use: /klid view spai|cover`, "info");
+          }
+          break;
+        }
         case "status": {
           const state = klidEnabled ? "quiet mode ON" : "quiet mode OFF";
           const thinking = klidEnabled ? "hidden" : "visible";
-          ctx.ui.notify(`klid: ${state} | thinking: ${thinking} | persists: ~/.pi/agent/pi-klid.json`, "info");
+          ctx.ui.notify(
+            `klid: ${state} | thinking: ${thinking} | view: ${klidView} | persists: ~/.pi/agent/pi-klid.json`,
+            "info",
+          );
           break;
         }
         default:

@@ -1,9 +1,11 @@
 # pi-klid
 
 Quiet zen mode for the [pi coding agent](https://pi.dev). One command, and while the
-agent works you see nothing but a slow breathing **Working...** animation.
-No thinking dumps, no tool-call noise, no streaming churn. When the agent is
-done, the animation dissolves and only the clean final answer appears.
+agent works the screen shows a calm, quiet surface instead of the noisy run:
+no thinking dumps, no tool-call noise, no streaming churn. You can pick between a
+static **Working...** cover and a live **SPAI task dashboard** to fill the time
+productively. When the agent is done, the surface dissolves and only the clean
+final answer appears.
 
 ---
 
@@ -12,7 +14,7 @@ done, the animation dissolves and only the clean final answer appears.
 | While `/klid on` | Behavior |
 |---|---|
 | Thinking blocks | Hidden at the render level — live and in history. Display-only; model context and the session transcript are untouched (`registerMarkdownTransformer` returns `""` for `assistant-thinking`). |
-| Tool activity | Covered by a quiet cover over the transcript, opened on `agent_start`. Every tool call, bash box, and streamed update stays out of sight until the agent settles. |
+| Tool activity | Covered by a quiet surface over the transcript, opened on `agent_start`. Every tool call, bash box, and streamed update stays out of sight until the agent settles. |
 | Final answer | Revealed automatically when the agent fully settles (after retries, compaction, and queued continuations have finished). |
 
 The cover is deliberately *unanimated*: a single dim **Working...** line at the
@@ -29,6 +31,34 @@ In non-TUI modes where overlays cannot render (`--mode rpc`, `--mode json`,
 `--mode print`) the plugin falls back to the built-in working row: a static
 **Working...** message with a single dim dot.
 
+## Working views
+
+Two surfaces can hide the run while `/klid on`:
+
+- **`cover`** (default) — a static, dim `Working...` line. Unanimated by design:
+  nothing to stare at.
+- **`spai`** — a live, interactive SPAI backlog dashboard. Browsable while the
+  agent works in the background: read tasks/ideas/notes from the project's
+  `docs/spai/` ledger, add new ones, cycle statuses, and open full details.
+
+Switch with `/klid view spai` or `/klid view cover`. The chosen view persists
+and is restored on session start.
+
+### SPAI dashboard keys
+
+| Key | Action |
+| --- | --- |
+| `↑`/`↓` or `k`/`j` | Browse items |
+| `n` | New item (SPAI syntax: `. task` `? idea` `- note` `!priority @deadline :tags:`) |
+| `x` | Cycle status (todo → working → waiting → done → cancelled) |
+| `Enter` | Open full item detail |
+| `r` | Reload index from disk |
+| `Esc` | Close dashboard |
+
+Everything written by the dashboard uses the exact SPAI file format pi-spai
+uses (`docs/spai/.index.json` + `YYYY-MM-DD-SPAI-NNN-*.md`), so items recorded
+here appear in `/spai` and vice versa.
+
 ## Install
 
 Add the plugin directory to your pi extensions (e.g. via your pi config's
@@ -37,11 +67,13 @@ Add the plugin directory to your pi extensions (e.g. via your pi config's
 ## Usage
 
 ```
-/klid            — help banner
-/klid on         — enable quiet mode
-/klid off        — disable quiet mode
-/klid toggle     — flip quiet mode
-/klid status     — show current state
+/klid               — help banner
+/klid on            — enable quiet mode
+/klid off           — disable quiet mode
+/klid toggle        — flip quiet mode
+/klid view spai     — live SPAI dashboard while working
+/klid view cover    — static quiet cover while working
+/klid status        — show current state
 ```
 
 The enabled state persists to `~/.pi/agent/pi-klid.json` and is restored on the

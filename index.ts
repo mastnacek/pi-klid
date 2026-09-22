@@ -70,6 +70,9 @@ interface KlidConfig {
 
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "pi-klid.json");
 const STATUS_KEY = "klid";
+// TUI-only state is also mirrored as a custom session entry so it survives
+// reloads and follows /tree branch navigation (AGENTS.md §5/§6).
+const STATE_ENTRY_TYPE = "pi-klid-state";
 
 const COMMAND_DOCS: Record<string, string> = {
   on: "enable quiet mode",
@@ -829,6 +832,15 @@ function setView(ctx: ExtensionContext, view: KlidView): void {
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI): void {
+  // Mirror the TUI-only enabled/view state into the session transcript.
+  const persistEntry = (): void => {
+    try {
+      pi.appendEntry(STATE_ENTRY_TYPE, { enabled: klidEnabled, view: klidView });
+    } catch {
+      // Best-effort: a missing session must not break the command.
+    }
+  };
+
   // Hiding thinking: display-only transformer. While quiet mode is on, thinking
   // blocks (live + history) render as nothing. Session/model context untouched.
   pi.registerMarkdownTransformer((markdown, context) => {
@@ -843,6 +855,14 @@ export default function (pi: ExtensionAPI): void {
     const cfg = loadConfig();
     klidEnabled = cfg.enabled;
     klidView = cfg.view;
+    // Session entry (branch-aware) wins over the global file, last one wins.
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type === "custom" && entry.customType === STATE_ENTRY_TYPE) {
+        const data = entry.data as { enabled?: boolean; view?: KlidView } | undefined;
+        if (typeof data?.enabled === "boolean") klidEnabled = data.enabled;
+        if (data?.view && KLID_VIEWS.includes(data.view)) klidView = data.view;
+      }
+    }
     if (ctx.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, klidEnabled ? "quiet" : undefined);
     }
@@ -948,16 +968,19 @@ export default function (pi: ExtensionAPI): void {
       switch (sub) {
         case "on":
           setEnabled(ctx, true);
+          persistEntry();
           ctx.ui.notify("klid: quiet mode ON — I'll leave you alone while I work", "info");
           break;
         case "off":
           setEnabled(ctx, false);
           applyQuietUi(ctx, false);
+          persistEntry();
           ctx.ui.notify("klid: quiet mode OFF", "info");
           break;
         case "toggle":
           setEnabled(ctx, !klidEnabled);
           if (!klidEnabled) applyQuietUi(ctx, false);
+          persistEntry();
           ctx.ui.notify(`klid: quiet mode ${klidEnabled ? "ON" : "OFF"}`, "info");
           break;
         case "view":
@@ -965,6 +988,7 @@ export default function (pi: ExtensionAPI): void {
           const target = (tokens[1] ?? "").toLowerCase();
           if (KLID_VIEWS.includes(target as KlidView)) {
             setView(ctx, target as KlidView);
+            persistEntry();
           } else {
             ctx.ui.notify(
               `klid: working view is \"${klidView}\". Use: /klid view cover|spai|kanban`,

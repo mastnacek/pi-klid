@@ -932,9 +932,17 @@ export default function (pi: ExtensionAPI): void {
       if (tokens.length > 2) return null;
 
       const typed = (tokens[0] ?? "").toLowerCase();
-      const items = Object.entries(COMMAND_DOCS)
-        .filter(([key]) => key.toLowerCase().startsWith(typed))
-        .map(([value, description]) => ({ value, label: value, description }));
+      const NON_TERMINAL = new Set(["view", "dashboard"]);
+      const items: AutocompleteItem[] = [];
+      for (const [key, description] of Object.entries(COMMAND_DOCS)) {
+        if (key.toLowerCase().startsWith(typed)) {
+          items.push({
+            value: NON_TERMINAL.has(key) ? `${key} ` : key,
+            label: key,
+            description,
+          });
+        }
+      }
       return items.length > 0 ? items : null;
     },
     handler: async (args: string, ctx: ExtensionCommandContext) => {

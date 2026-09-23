@@ -832,6 +832,14 @@ function setView(ctx: ExtensionContext, view: KlidView): void {
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI): void {
+  /** Unsubscribers from every `pi.on()`; drained on session_shutdown (AGENTS §5). */
+  const unsubscribers: Array<() => void> = [];
+
+  /** Retain a `pi.on()` return value; older engine typings declare it void. */
+  const track = (result: unknown): void => {
+    if (typeof result === "function") unsubscribers.push(result as () => void);
+  };
+
   // Mirror the TUI-only enabled/view state into the session transcript.
   const persistEntry = (): void => {
     try {
@@ -848,7 +856,7 @@ export default function (pi: ExtensionAPI): void {
     return markdown;
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  track(pi.on("session_start", async (_event, ctx) => {
     // A fresh/rebound session must never inherit a stale overlay that would
     // keep covering the editor while the agent is idle.
     closeOverlay();
@@ -866,9 +874,9 @@ export default function (pi: ExtensionAPI): void {
     if (ctx.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, klidEnabled ? "quiet" : undefined);
     }
-  });
+  }));
 
-  pi.on("agent_start", async (_event, ctx) => {
+  track(pi.on("agent_start", async (_event, ctx) => {
     if (!klidEnabled) return;
     applyQuietUi(ctx, true);
     if (klidView === "kanban") {
@@ -880,11 +888,11 @@ export default function (pi: ExtensionAPI): void {
       }
     }
     openOverlay(ctx, klidView);
-  });
+  }));
 
   // Fully settles only when no retry/compaction/continuation is left — that is
   // exactly when the user can look at the answer again.
-  pi.on("agent_settled", async (_event, ctx) => {
+  track(pi.on("agent_settled", async (_event, ctx) => {
     if (!klidEnabled) {
       closeOverlay();
       if (workingTouched) applyQuietUi(ctx, false);
@@ -892,15 +900,16 @@ export default function (pi: ExtensionAPI): void {
     }
     closeOverlay();
     applyQuietUi(ctx, false);
-  });
+  }));
 
   // Safety net: a fresh prompt while an overlay is somehow still open.
-  pi.on("input", async (_event, ctx) => {
+  track(pi.on("input", async (_event, ctx) => {
     closeOverlay();
     if (workingTouched) applyQuietUi(ctx, false);
-  });
+  }));
 
   pi.on("session_shutdown", async () => {
+    while (unsubscribers.length > 0) unsubscribers.pop()?.();
     closeOverlay();
   });
 

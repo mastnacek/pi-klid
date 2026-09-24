@@ -9,6 +9,7 @@
     "index.ts",
     "kanban.ts",
     "palette.ts",
-    "spai-board.ts"
+    "spai-board.ts",
+    "src"
   ]
 }

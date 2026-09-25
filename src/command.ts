@@ -1,6 +1,5 @@
 import { type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem } from "@earendil-works/pi-tui";
-import { join } from "node:path";
 import { type KlidView, KLID_VIEWS, GLOBAL_CONFIG_PATH, COMMAND_DOCS, projectConfigPath } from "./types.js";
 import { klid } from "./state.js";
 import { applyQuietUi, setEnabled, setView } from "./overlay.js";

@@ -1,6 +1,5 @@
 import { type Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type Component, type TUI } from "@earendil-works/pi-tui";
-import { join } from "node:path";
 import { klid } from "./state.js";
 import { cycleStatus, loadIndex, parseSpai, readRecordBody, saveRecord, updateRecordStatus, type SpaiIndexEntry, type SpaiStatus } from "../spai.js";
 

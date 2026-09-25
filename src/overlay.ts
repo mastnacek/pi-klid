@@ -1,8 +1,7 @@
 import { type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type TUI } from "@earendil-works/pi-tui";
 import { type KlidView, STATUS_KEY, saveConfig } from "./types.js";
 import { klid, reservedRows, quietWorkingIndicator } from "./state.js";
-import { QuietCover, padToCover } from "./cover.js";
+import { QuietCover } from "./cover.js";
 import { SpaiDashboard } from "./spai-dashboard.js";
 import { KanbanBoard } from "../kanban.js";
 import { formatRealizePrompt, type SpaiBoardRecord } from "../spai-board.js";

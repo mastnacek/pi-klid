@@ -8,7 +8,6 @@ import { matchesKey, type Component } from "@earendil-works/pi-tui";
 import { klid, reservedRows } from "./state.js";
 import { padToCover } from "./cover.js";
 import { overlayOptions, realizeFromBoard } from "./overlay.js";
-import { loadIndex, saveRecord } from "../spai.js";
 import { type SpaiBoardModule, type SpaiBoardRecord } from "../spai-board.js";
 import { pinkGlow } from "../palette.js";
 

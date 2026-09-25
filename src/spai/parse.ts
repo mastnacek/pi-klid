@@ -170,7 +170,7 @@ export function cycleStatus(current: SpaiStatus, type: SpaiNoteType): SpaiStatus
 
 export function parseSpaiMarkdown(
   content: string,
-  _fileName = "",
+  fileName = "",
 ): { id: string; title: string; type: SpaiNoteType; status: SpaiStatus; body: string } | null {
   let yamlRaw = "";
   let body = content;
@@ -181,14 +181,20 @@ export function parseSpaiMarkdown(
       body = content.slice(end + 4).trimStart().replace(/^\n/, "");
     }
   }
-  const hm =
-    body.match(/^#\s*(SPAI-\d+)?:\s*(.+)$/m) || body.match(/^#\s*(.+)$/m);
-  let id = "SPAI-001";
+  // The header may or may not carry the id. The fallback regex captures the TITLE,
+  // so the two shapes have to be distinguished — otherwise the header text ends up
+  // in `id` and every id-less file gets a title for an id.
+  const withId = body.match(/^#\s*(SPAI-\d+):\s*(.+)$/m);
+  const plainHeader = body.match(/^#\s*(.+)$/m);
+  // Without a header id, fall back to the id in the file name (`saveRecord` writes
+  // `YYYY-MM-DD-SPAI-NNN-slug.md`) so id-less files cannot all collapse onto SPAI-001.
+  let id = fileName.match(/SPAI-\d+/i)?.[0]?.toUpperCase() ?? "SPAI-001";
   let title = "Untitled";
-  if (hm) {
-    if (hm[1]) id = hm[1].trim();
-    if (hm[2]) title = hm[2].trim();
-    else if (hm[1]) title = hm[1].trim();
+  if (withId) {
+    id = withId[1].trim();
+    title = withId[2].trim();
+  } else if (plainHeader) {
+    title = plainHeader[1].trim();
   }
   const cleanBody = body.replace(/^#\s*.+$/m, "").trim();
   const parsed = parseSpai(cleanBody || title);

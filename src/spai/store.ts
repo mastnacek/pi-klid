@@ -252,9 +252,23 @@ export function updateRecordStatus(
   const prefixMatch = matchPrefix(trimmed);
   lines[firstIdx] = `${indent}${prefix}${prefixMatch ? trimmed.slice(prefixMatch.prefix.length) : trimmed}`;
 
-  const oldFrontmatter = content.slice(0, content.indexOf("---", 4) + 3);
-  const newBody = `${oldFrontmatter}\n${lines.join("\n")}\n`;
-  atomicWrite(filePath, newBody);
+  // Rewrite the frontmatter's status (and symbol) rather than copying it verbatim:
+  // a stale `status:` contradicts the index, and parseSpaiMarkdown prefers YAML over
+  // the body prefix, so any later rescan would read the old status straight back.
+  const fmEnd = content.indexOf("---", 4);
+  let frontmatter = fmEnd === -1 ? "" : content.slice(0, fmEnd + 3);
+  if (/^status:\s*.+$/m.test(frontmatter)) {
+    frontmatter = frontmatter.replace(/^status:\s*.+$/m, `status: ${nextStatus}`);
+  }
+  if (/^spai_symbol:.*$/m.test(frontmatter)) {
+    frontmatter = frontmatter.replace(/^spai_symbol:.*$/m, `spai_symbol: '${symbol}'`);
+  }
+
+  // The `# ID: title` header belongs to the file, so keep it. Dropping it lost the id
+  // for any later scan that had no .index.json to fall back on.
+  const header = /^#\s/m.test(content) ? `# ${parsed.id}: ${parsed.title}\n\n` : "";
+  const prefixBlock = frontmatter ? `${frontmatter}\n\n` : "";
+  atomicWrite(filePath, `${prefixBlock}${header}${lines.join("\n")}\n`);
 
   entry.status = nextStatus;
   entry.symbol = symbol;

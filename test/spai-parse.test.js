@@ -171,13 +171,18 @@ test("parseSpaiMarkdown derives type/status from the body when frontmatter omits
 	assert.equal(r.body, ". Todo item");
 });
 
-test("parseSpaiMarkdown puts a header without a SPAI id into the id field", () => {
-	const r = parseSpaiMarkdown("# Just a title\n\nBody\n");
-	assert.ok(r);
-	// Pinned quirk: the fallback regex captures the title, which the code then
-	// treats as the id — so any other .md in the ledger dir gets the header text as id.
-	assert.equal(r.id, "Just a title");
-	assert.equal(r.title, "Just a title");
+test("parseSpaiMarkdown takes a missing header id from the file name", () => {
+	// FIXED: the fallback regex captured the title, which the code then treated as the
+	// id — so any .md without an id got its own header text as an id.
+	const named = parseSpaiMarkdown("# Just a title\n\nBody\n", "2026-01-01-SPAI-042-just-a-title.md");
+	assert.ok(named);
+	assert.equal(named.id, "SPAI-042", "id comes from the file name");
+	assert.equal(named.title, "Just a title");
+
+	const unnamed = parseSpaiMarkdown("# Just a title\n\nBody\n");
+	assert.ok(unnamed);
+	assert.equal(unnamed.id, "SPAI-001", "first slot when there is no file name either");
+	assert.equal(unnamed.title, "Just a title");
 });
 
 test("parseSpaiMarkdown survives content with no header and no frontmatter", () => {

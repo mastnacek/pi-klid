@@ -158,7 +158,7 @@ test("saveRecord gives an untitled record a fallback slug", (t) => {
 
 // --- updateRecordStatus ------------------------------------------------------
 
-test("updateRecordStatus rewrites the prefix on the first body line", (t) => {
+test("updateRecordStatus rewrites the prefix, the frontmatter and keeps the header", (t) => {
 	const cwd = makeCwd(t);
 	const { id } = saveRecord(cwd, ". Original task");
 
@@ -169,11 +169,12 @@ test("updateRecordStatus rewrites the prefix on the first body line", (t) => {
 	assert.equal(readRecordBody(cwd, entry), "x Original task", "body carries the new prefix");
 	assert.ok(loadIndex(cwd).lastUpdated.length > 0);
 
+	// FIXED: the frontmatter used to be copied verbatim — so its status went stale and
+	// contradicted the index — and the '# ID: title' header was dropped on rewrite.
 	const raw = readFileSync(join(cwd, "docs", "spai", entry.file), "utf8");
-	assert.equal(/# SPAI-/.test(raw), false, "the '# ID: title' header is dropped on rewrite");
-	// Pinned quirk: the frontmatter is copied verbatim, so its `status:` goes stale
-	// and disagrees with the index until something rewrites the file.
-	assert.match(raw, /^status: todo$/m, "frontmatter status is NOT rewritten");
+	assert.match(raw, /^status: done$/m, "frontmatter status follows the index");
+	assert.match(raw, /^spai_symbol: 'x'$/m, "symbol follows too");
+	assert.match(raw, /^# SPAI-001: Original task$/m, "the header survives the rewrite");
 });
 
 test("updateRecordStatus promotes an Idea once it becomes actionable", (t) => {
